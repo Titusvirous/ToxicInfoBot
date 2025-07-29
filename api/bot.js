@@ -33,10 +33,12 @@ client.connect().then(() => console.log("MongoDB connected successfully!")).catc
 
 const addCreditWizard = new Scenes.WizardScene(
     'add_credit_wizard',
+    // Step 1: Ask for User ID
     async (ctx) => {
         await ctx.reply("👤 Please send the User ID of the recipient.\n\nType /cancel to abort.");
         return ctx.wizard.next();
     },
+    // Step 2: Receive User ID, validate, and ask for Amount
     async (ctx) => {
         if (!ctx.message || !ctx.message.text) return;
         const targetId = parseInt(ctx.message.text, 10);
@@ -51,6 +53,7 @@ const addCreditWizard = new Scenes.WizardScene(
         await ctx.reply(`✅ User \`${targetId}\` found. Now, please send the amount of credits to add.`, { parse_mode: 'Markdown' });
         return ctx.wizard.next();
     },
+    // Step 3: Receive Amount, update DB, and end conversation
     async (ctx) => {
         if (!ctx.message || !ctx.message.text) return;
         const amount = parseInt(ctx.message.text, 10);
@@ -110,10 +113,8 @@ const getMainMenuKeyboard = (userId) => {
     if (ADMIN_IDS.includes(userId)) {
         keyboard.push([KeyboardButton("Add Credit 👤"), KeyboardButton("Broadcast 📢")], [KeyboardButton("Member Status 👥")]);
     }
-    // THE FIX: Always ensure the keyboard is a proper Markup object
     return Markup.keyboard(keyboard).resize();
 };
-
 const formatRealRecordAsMessage = (record, index, total) => {
     const rawAddress = record.address || 'N/A';
     const cleanedParts = rawAddress.replace(/!!/g, '!').split('!').map(p => p.trim()).filter(Boolean);
@@ -174,7 +175,6 @@ bot.start(async (ctx) => {
                        `💳 **Your Credits:** ${userDoc.credits}\n` +
                        `📊 **Total Searches:** ${userDoc.searches}\n` +
                        `📅 **Member Since:** ${new Date(userDoc.join_date).toLocaleDateString()}`;
-    // THE FIX: Always use ctx.reply with the keyboard object as the second argument
     await ctx.reply(welcomeMsg, {
         parse_mode: 'Markdown',
         ...getMainMenuKeyboard(userId)
@@ -183,9 +183,8 @@ bot.start(async (ctx) => {
 
 bot.hears("My Account 📊", async (ctx) => {
     const userDoc = await usersCollection.findOne({ _id: ctx.from.id });
-    if (!userDoc) return ctx.reply("Please press /start to register.");
+    if (!userDoc) return ctx.reply("Please press /start to register.", getMainMenuKeyboard(ctx.from.id));
     const accountMsg = `🎯 *Welcome, ${ctx.from.first_name}!*` + `\n\n💳 *Your Credits:* ${userDoc.credits}` + `\n📊 *Total Searches:* ${userDoc.searches}` + `\n🗓️ *Member Since:* ${new Date(userDoc.join_date).toLocaleDateString()}`;
-    // THE FIX: Always reply with the keyboard to keep it persistent
     await ctx.reply(accountMsg, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
@@ -196,9 +195,19 @@ bot.hears("Help ❓", (ctx) => {
 
 bot.hears("Refer & Earn 🎁", async (ctx) => {
     const userDoc = await usersCollection.findOne({ _id: ctx.from.id });
-    if (!userDoc) return ctx.reply("Please press /start to register first.");
+    if (!userDoc) return ctx.reply("Please press /start to register first.", getMainMenuKeyboard(ctx.from.id));
     const referralLink = `https://t.me/${ctx.botInfo.username}?start=${ctx.from.id}`;
-    const referralMsg = `🎁 **Refer & Earn Credits**\n\n` + `📊 *Your Performance:*\n` + `👥 Total Referrals: ${userDoc.referrals || 0}\n` + `💰 Credits Earned: ${userDoc.credits_earned || 0}\n\n` + `💡 *How It Works:*\n` + `• Share your referral link with friends\n` + `• They get ${INITIAL_CREDITS} free credits when joining\n` + `• You earn ${REFERRAL_CREDIT} credit for each successful referral\n\n` + `📱 *Your Referral Link:*\n` + `\`${referralLink}\`\n\n` + `🚀 Start sharing to earn unlimited credits!`;
+    const referralMsg = `🎁 **Refer & Earn Credits**\n\n` +
+                        `📊 *Your Performance:*\n` +
+                        `👥 Total Referrals: ${userDoc.referrals || 0}\n` +
+                        `💰 Credits Earned: ${userDoc.credits_earned || 0}\n\n` +
+                        `💡 *How It Works:*\n` +
+                        `• Share your referral link with friends\n` +
+                        `• They get ${INITIAL_CREDITS} free credits when joining\n` +
+                        `• You earn ${REFERRAL_CREDIT} credit for each successful referral\n\n` +
+                        `📱 *Your Referral Link:*\n` +
+                        `\`${referralLink}\`\n\n` +
+                        `🚀 Start sharing to earn unlimited credits!`;
     await ctx.reply(referralMsg, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
@@ -224,7 +233,7 @@ bot.on('text', async (ctx) => {
         return ctx.reply("That doesn't seem to be a valid command or phone number. Please use the menu buttons or send a 10-digit number.", getMainMenuKeyboard(userId));
     }
     const userDoc = await usersCollection.findOne({ _id: userId });
-    if (!userDoc) return ctx.reply("Please press /start to register.");
+    if (!userDoc) return ctx.reply("Please press /start to register.", getMainMenuKeyboard(userId));
     if (userDoc.credits < 1) return ctx.reply("You have insufficient credits.", getMainMenuKeyboard(userId));
     
     const processingMessage = await ctx.reply('🔎 Accessing database... This will consume 1 credit.');
