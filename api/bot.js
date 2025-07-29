@@ -37,6 +37,10 @@ const addCreditStep1 = async (ctx) => {
 
 // Step 2: Receive User ID, validate it, and ask for Amount
 const addCreditStep2 = async (ctx) => {
+    // Check if the message is text
+    if (!ctx.message || !ctx.message.text) {
+        return; // Ignore non-text messages
+    }
     const targetId = parseInt(ctx.message.text, 10);
     if (isNaN(targetId)) {
         return ctx.reply("❗️Invalid ID format. Please send numbers only or type /cancel.");
@@ -53,6 +57,10 @@ const addCreditStep2 = async (ctx) => {
 
 // Step 3: Receive Amount, update DB, and end conversation
 const addCreditStep3 = async (ctx) => {
+    // Check if the message is text
+    if (!ctx.message || !ctx.message.text) {
+        return; // Ignore non-text messages
+    }
     const amount = parseInt(ctx.message.text, 10);
     if (isNaN(amount) || amount <= 0) {
         return ctx.reply("❗️Invalid amount. Please send a positive number or type /cancel.");
@@ -136,6 +144,10 @@ const formatRealRecordAsMessage = (record, index, total) => {
 
 bot.use(async (ctx, next) => {
     const userId = ctx.from.id;
+    // If a scene is active, don't run the force join middleware again.
+    if (ctx.scene && ctx.scene.current) {
+        return next();
+    }
     if (ADMIN_IDS.includes(userId)) return next();
     try {
         const chatMember = await ctx.telegram.getChatMember(CHANNEL_USERNAME, userId);
