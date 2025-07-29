@@ -1,6 +1,6 @@
 // --- LOAD LIBRARIES ---
 require('dotenv').config();
-const { Telegraf, Markup, Scenes, session } = require('telegraf'); // <-- IMPORT SCENES AND SESSION
+const { Telegraf, Markup, Scenes, session } = require('telegraf');
 const { MongoClient } = require('mongodb');
 const axios = require('axios');
 
@@ -26,43 +26,39 @@ const usersCollection = db.collection("users");
 console.log("Attempting to connect to MongoDB...");
 client.connect().then(() => console.log("MongoDB connected successfully!")).catch(err => console.error("MongoDB connection failed:", err));
 
+// --- SCENES SETUP FOR CONVERSATIONS (THE FIX IS HERE) ---
 
-// --- BOT INITIALIZATION ---
-const bot = new Telegraf(TOKEN);
-
-// --- SCENES SETUP FOR CONVERSATIONS ---
-
-// Scene for Adding Credits
-const addCreditScene = new Scenes.BaseScene('add_credit_scene');
-addCreditScene.enter(async (ctx) => {
-    await ctx.reply("👤 Please send the User ID of the recipient.\n\nType /cancel to abort.");
-});
-addCreditScene.command('cancel', async (ctx) => {
+// Step 1: Handler for getting User ID
+const getUserIdHandler = new Scenes.BaseScene('get_user_id_handler');
+getUserIdHandler.enter(ctx => ctx.reply("👤 Please send the User ID of the recipient.\n\nType /cancel to abort."));
+getUserIdHandler.command('cancel', async (ctx) => {
     await ctx.reply("🔹 Action has been cancelled.", getMainMenuKeyboard(ctx.from.id));
     return ctx.scene.leave();
 });
-addCreditScene.on('text', async (ctx) => {
+getUserIdHandler.on('text', async (ctx) => {
     const targetId = parseInt(ctx.message.text, 10);
     if (isNaN(targetId)) {
-        await ctx.reply("❗️Invalid ID. Please send numbers only or type /cancel.");
-        return;
+        return ctx.reply("❗️Invalid ID. Please send numbers only or type /cancel.");
     }
     const userExists = await usersCollection.findOne({ _id: targetId });
     if (!userExists) {
-        await ctx.reply("⚠️ User not found in the database. Please try again or type /cancel.");
-        return;
+        return ctx.reply("⚠️ User not found in the database. Please try again or type /cancel.");
     }
-    ctx.scene.state.targetId = targetId; // Save the ID in the scene's memory
-    await ctx.reply(`✅ User \`${targetId}\` found. Now, please send the amount of credits to add.`, { parse_mode: 'Markdown' });
-    return ctx.wizard.next(); // Move to the next step in the wizard
+    ctx.scene.state.targetId = targetId; // Save ID for the next step
+    return ctx.scene.enter('get_credit_amount_handler'); // Move to the next scene
 });
-// This is the second step of the wizard
-addCreditScene.wizard.action(/.*/, (ctx) => {}); // Dummy action to satisfy the wizard
-addCreditScene.wizard.on('text', async (ctx) => {
+
+// Step 2: Handler for getting Credit Amount
+const getCreditAmountHandler = new Scenes.BaseScene('get_credit_amount_handler');
+getCreditAmountHandler.enter(ctx => ctx.reply(`✅ User \`${ctx.scene.state.targetId}\` found. Now, please send the amount of credits to add.`, { parse_mode: 'Markdown' }));
+getCreditAmountHandler.command('cancel', async (ctx) => {
+    await ctx.reply("🔹 Action has been cancelled.", getMainMenuKeyboard(ctx.from.id));
+    return ctx.scene.leave();
+});
+getCreditAmountHandler.on('text', async (ctx) => {
     const amount = parseInt(ctx.message.text, 10);
     if (isNaN(amount) || amount <= 0) {
-        await ctx.reply("❗️Invalid amount. Please send a positive number or type /cancel.");
-        return;
+        return ctx.reply("❗️Invalid amount. Please send a positive number or type /cancel.");
     }
     const { targetId } = ctx.scene.state;
     await usersCollection.updateOne({ _id: targetId }, { $inc: { credits: amount } });
@@ -78,7 +74,7 @@ addCreditScene.wizard.on('text', async (ctx) => {
 
 // Scene for Broadcasting
 const broadcastScene = new Scenes.BaseScene('broadcast_scene');
-broadcastScene.enter((ctx) => ctx.reply("📢 Please send the message you want to broadcast to all users.\n\nType /cancel to abort."));
+broadcastScene.enter(ctx => ctx.reply("📢 Please send the message you want to broadcast to all users.\n\nType /cancel to abort."));
 broadcastScene.command('cancel', async (ctx) => {
     await ctx.reply("🔹 Action has been cancelled.", getMainMenuKeyboard(ctx.from.id));
     return ctx.scene.leave();
@@ -107,16 +103,34 @@ broadcastScene.on('text', async (ctx) => {
 });
 
 // Create a Stage, which is a scene manager
-const stage = new Scenes.Stage([addCreditScene, broadcastScene]);
+const stage = new Scenes.Stage([getUserIdHandler, getCreditAmountHandler, broadcastScene]);
 
-// Enable session middleware, which is required for scenes to work
+// --- BOT INITIALIZATION ---
+const bot = new Telegraf(TOKEN);
 bot.use(session());
 bot.use(stage.middleware());
 
+// --- MIDDLEWARE & HELPERS ---
+// ... (All other functions like force_join, getMainMenuKeyboard, formatRealRecordAsMessage are unchanged)
+const getMainMenuKeyboard = (userId) => {
+    const keyboard = [
+        [Markup.button.text("Refer & Earn 🎁"), Markup.button.text("Buy Credits 💰")],
+        [Markup.button.text("My Account 📊"), Markup.button.text("Help ❓")]
+    ];
+    if (ADMIN_IDS.includes(userId)) {
+        keyboard.push([Markup.button.text("Add Credit 👤"), Markup.button.text("Broadcast 📢")], [Markup.button.text("Member Status 👥")]);
+    }
+    return Markup.keyboard(keyboard).resize();
+};
 
-// --- MIDDLEWARE: FORCE CHANNEL JOIN ---
+const formatRealRecordAsMessage = (record, index, total) => {
+    const rawAddress = record.address || 'N/A';
+    const cleanedParts = rawAddress.replace(/!!/g, '!').split('!').map(p => p.trim()).filter(Boolean);
+    const formattedAddress = cleanedParts.join(', ');
+    return `📊 *Record ${index + 1} of ${total}*\n` + `➖➖➖➖➖➖➖➖➖➖\n` + `👤 *Name:* \`${record.name || 'N/A'}\`\n` + `👨 *Father's Name:* \`${record.fname || 'N/A'}\`\n` + `📱 *Mobile:* \`${record.mobile || 'N/A'}\`\n` + `🏠 *Address:* \`${formattedAddress}\`\n` + `📡 *Circle:* \`${record.circle || 'N/A'}\``;
+};
+
 bot.use(async (ctx, next) => {
-    // ... (This middleware remains unchanged)
     const userId = ctx.from.id;
     if (ADMIN_IDS.includes(userId)) return next();
     try {
@@ -133,30 +147,7 @@ bot.use(async (ctx, next) => {
     return next();
 });
 
-
-// --- HELPER FUNCTION: GET MAIN KEYBOARD ---
-const getMainMenuKeyboard = (userId) => {
-    // ... (This function remains unchanged)
-    const keyboard = [
-        [Markup.button.text("Refer & Earn 🎁"), Markup.button.text("Buy Credits 💰")],
-        [Markup.button.text("My Account 📊"), Markup.button.text("Help ❓")]
-    ];
-    if (ADMIN_IDS.includes(userId)) {
-        keyboard.push([Markup.button.text("Add Credit 👤"), Markup.button.text("Broadcast 📢")], [Markup.button.text("Member Status 👥")]);
-    }
-    return Markup.keyboard(keyboard).resize();
-};
-
-// --- HELPER FUNCTION: FORMAT REAL DATA ---
-const formatRealRecordAsMessage = (record, index, total) => {
-    // ... (This function remains unchanged)
-    const rawAddress = record.address || 'N/A';
-    const cleanedParts = rawAddress.replace(/!!/g, '!').split('!').map(p => p.trim()).filter(Boolean);
-    const formattedAddress = cleanedParts.join(', ');
-    return `📊 *Record ${index + 1} of ${total}*\n` + `➖➖➖➖➖➖➖➖➖➖\n` + `👤 *Name:* \`${record.name || 'N/A'}\`\n` + `👨 *Father's Name:* \`${record.fname || 'N/A'}\`\n` + `📱 *Mobile:* \`${record.mobile || 'N/A'}\`\n` + `🏠 *Address:* \`${formattedAddress}\`\n` + `📡 *Circle:* \`${record.circle || 'N/A'}\``;
-};
-
-// --- COMMAND HANDLERS ---
+// --- COMMAND & BUTTON HANDLERS ---
 bot.start(async (ctx) => {
     // ... (This handler remains unchanged)
     const user = ctx.from, userId = user.id;
@@ -188,7 +179,6 @@ bot.start(async (ctx) => {
     await ctx.reply(welcomeMessage, { parse_mode: 'Markdown', ...getMainMenuKeyboard(userId) });
 });
 
-// --- BUTTON HANDLERS ---
 bot.hears("My Account 📊", async (ctx) => {
     // ... (This handler remains unchanged)
     const userDoc = await usersCollection.findOne({ _id: ctx.from.id });
@@ -209,7 +199,7 @@ bot.hears("Member Status 👥", async (ctx) => {
 // --- ADMIN SCENE TRIGGERS ---
 bot.hears("Add Credit 👤", (ctx) => {
     if (!ADMIN_IDS.includes(ctx.from.id)) return;
-    ctx.scene.enter('add_credit_scene');
+    ctx.scene.enter('get_user_id_handler'); // Start the 'add credit' wizard
 });
 bot.hears("Broadcast 📢", (ctx) => {
     if (!ADMIN_IDS.includes(ctx.from.id)) return;
@@ -244,7 +234,6 @@ bot.on('text', async (ctx) => {
     }
 });
 
-
 // --- EXPORT FOR VERCEL ---
 module.exports = async (req, res) => {
     try {
@@ -255,4 +244,3 @@ module.exports = async (req, res) => {
         res.status(500).send('Error');
     }
 };
-          
