@@ -1,0 +1,8 @@
+# Secret environment variables file
+.env
+
+# Node.js dependency folder
+node_modules/
+
+# Log files
+*.log
