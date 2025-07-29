@@ -14,6 +14,7 @@ const SUPPORT_ADMIN = "@CDMAXX";
 // --- CONSTANTS ---
 const INITIAL_CREDITS = 2;
 const REFERRAL_CREDIT = 1;
+const CHARACTER_LIMIT = 4000; // Safe character limit for Telegram messages
 
 // --- DATABASE SETUP ---
 if (!TOKEN || !MONGO_URI) {
@@ -26,50 +27,36 @@ const usersCollection = db.collection("users");
 console.log("Attempting to connect to MongoDB...");
 client.connect().then(() => console.log("MongoDB connected successfully!")).catch(err => console.error("MongoDB connection failed:", err));
 
-// --- SCENES SETUP FOR CONVERSATIONS ---
-
-// This is a multi-step conversation for adding credits.
-// Step 1: Ask for User ID
-const addCreditStep1 = async (ctx) => {
-    await ctx.reply("👤 Please send the User ID of the recipient.\n\nType /cancel to abort.");
-    return ctx.wizard.next(); // Move to the next function in the wizard
-};
-
-// Step 2: Receive User ID, validate it, and ask for Amount
-const addCreditStep2 = async (ctx) => {
-    if (!ctx.message || !ctx.message.text) return; // Ignore non-text messages
-    const targetId = parseInt(ctx.message.text, 10);
-    if (isNaN(targetId)) {
-        return ctx.reply("❗️Invalid ID format. Please send numbers only or type /cancel.");
+// --- SCENES SETUP ---
+const addCreditWizard = new Scenes.WizardScene(
+    'add_credit_wizard',
+    async (ctx) => {
+        await ctx.reply("👤 Please send the User ID of the recipient.\n\nType /cancel to abort.");
+        return ctx.wizard.next();
+    },
+    async (ctx) => {
+        if (!ctx.message || !ctx.message.text) return;
+        const targetId = parseInt(ctx.message.text, 10);
+        if (isNaN(targetId)) return ctx.reply("❗️Invalid ID format. Please send numbers only or type /cancel.");
+        const userExists = await usersCollection.findOne({ _id: targetId });
+        if (!userExists) return ctx.reply("⚠️ User not found. Please try again or type /cancel.");
+        ctx.wizard.state.targetId = targetId;
+        await ctx.reply(`✅ User \`${targetId}\` found. Now, send the amount of credits to add.`, { parse_mode: 'Markdown' });
+        return ctx.wizard.next();
+    },
+    async (ctx) => {
+        if (!ctx.message || !ctx.message.text) return;
+        const amount = parseInt(ctx.message.text, 10);
+        if (isNaN(amount) || amount <= 0) return ctx.reply("❗️Invalid amount. Please send a positive number or type /cancel.");
+        const { targetId } = ctx.wizard.state;
+        await usersCollection.updateOne({ _id: targetId }, { $inc: { credits: amount } });
+        await ctx.reply(`✅ Success! Added ${amount} credits to user ${targetId}.`, getMainMenuKeyboard(ctx.from.id));
+        try {
+            await ctx.telegram.sendMessage(targetId, `🎉 An administrator has added *${amount} credits* to your account!`, { parse_mode: 'Markdown' });
+        } catch (e) { console.error(`Failed to notify user ${targetId}:`, e); }
+        return ctx.scene.leave();
     }
-    const userExists = await usersCollection.findOne({ _id: targetId });
-    if (!userExists) {
-        return ctx.reply("⚠️ User not found in the database. Please check the ID and try again, or type /cancel.");
-    }
-    ctx.wizard.state.targetId = targetId;
-    await ctx.reply(`✅ User \`${targetId}\` found. Now, please send the amount of credits to add.`, { parse_mode: 'Markdown' });
-    return ctx.wizard.next();
-};
-
-// Step 3: Receive Amount, update DB, and end conversation
-const addCreditStep3 = async (ctx) => {
-    if (!ctx.message || !ctx.message.text) return;
-    const amount = parseInt(ctx.message.text, 10);
-    if (isNaN(amount) || amount <= 0) {
-        return ctx.reply("❗️Invalid amount. Please send a positive number or type /cancel.");
-    }
-    const { targetId } = ctx.wizard.state;
-    await usersCollection.updateOne({ _id: targetId }, { $inc: { credits: amount } });
-    await ctx.reply(`✅ Success! Added ${amount} credits to user ${targetId}.`, getMainMenuKeyboard(ctx.from.id));
-    try {
-        await ctx.telegram.sendMessage(targetId, `🎉 An administrator has added *${amount} credits* to your account!`, { parse_mode: 'Markdown' });
-    } catch (e) {
-        console.error(`Failed to notify user ${targetId} about credits:`, e);
-    }
-    return ctx.scene.leave();
-};
-
-const addCreditWizard = new Scenes.WizardScene('add_credit_wizard', addCreditStep1, addCreditStep2, addCreditStep3);
+);
 addCreditWizard.command('cancel', async (ctx) => {
     await ctx.reply("🔹 Action has been cancelled.", getMainMenuKeyboard(ctx.from.id));
     return ctx.scene.leave();
@@ -88,12 +75,7 @@ broadcastScene.on('text', async (ctx) => {
     await ctx.reply(`⏳ Broadcasting your message to ${userIds.length} users...`);
     let successCount = 0, failureCount = 0;
     for (const uid of userIds) {
-        try {
-            await ctx.telegram.sendMessage(uid, msg);
-            successCount++;
-        } catch (e) {
-            failureCount++;
-        }
+        try { await ctx.telegram.sendMessage(uid, msg); successCount++; } catch (e) { failureCount++; }
     }
     await ctx.reply(`📢 *Broadcast Complete!*\n✅ Sent: ${successCount}\n❌ Failed: ${failureCount}`, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
     return ctx.scene.leave();
@@ -108,17 +90,14 @@ bot.use(stage.middleware());
 
 // --- MIDDLEWARE & HELPERS ---
 const getMainMenuKeyboard = (userId) => {
-    const keyboard = [
-        [Markup.button.text("Refer & Earn 🎁"), Markup.button.text("Buy Credits 💰")],
-        [Markup.button.text("My Account 📊"), Markup.button.text("Help ❓")]
-    ];
+    const keyboard = [[Markup.button.text("Refer & Earn 🎁"), Markup.button.text("Buy Credits 💰")], [Markup.button.text("My Account 📊"), Markup.button.text("Help ❓")]];
     if (ADMIN_IDS.includes(userId)) {
         keyboard.push([Markup.button.text("Add Credit 👤"), Markup.button.text("Broadcast 📢")], [Markup.button.text("Member Status 👥")]);
     }
     return Markup.keyboard(keyboard).resize();
 };
 
-const formatRealRecordAsMessage = (record, index, total) => {
+const formatRealRecord = (record, index, total) => {
     const rawAddress = record.address || 'N/A';
     const cleanedParts = rawAddress.replace(/!!/g, '!').split('!').map(p => p.trim()).filter(Boolean);
     const formattedAddress = cleanedParts.join(', ');
@@ -134,9 +113,7 @@ bot.use(async (ctx, next) => {
         if (!['member', 'administrator', 'creator'].includes(chatMember.status)) {
             return ctx.reply(`❗️ **Access Denied**\n\nTo use this bot, you must join our official channel.\nPlease join 👉 ${CHANNEL_USERNAME} and then press /start.`, { parse_mode: 'HTML' });
         }
-    } catch (error) {
-        return ctx.reply("⛔️ Error verifying channel membership. Please contact support.");
-    }
+    } catch (error) { return ctx.reply("⛔️ Error verifying channel membership. Please contact support."); }
     return next();
 });
 
@@ -157,11 +134,9 @@ bot.start(async (ctx) => {
                 }
             }
         }
-        let adminNotification = `🎉 New Member Alert!\n\nName: ${user.first_name}\nProfile: [${userId}](tg://user?id=${userId})`;
+        let adminNotification = `🎉 New Member Alert!\nName: ${user.first_name}\nProfile: [${userId}](tg://user?id=${userId})`;
         if (user.username) adminNotification += `\nUsername: @${user.username}`;
-        for (const adminId of ADMIN_IDS) {
-            try { await ctx.telegram.sendMessage(adminId, adminNotification, { parse_mode: 'Markdown' }); } catch (e) {}
-        }
+        for (const adminId of ADMIN_IDS) { try { await ctx.telegram.sendMessage(adminId, adminNotification, { parse_mode: 'Markdown' }); } catch (e) {} }
         const newUser = { _id: userId, first_name: user.first_name, username: user.username, credits: INITIAL_CREDITS, searches: 0, join_date: new Date() };
         await usersCollection.insertOne(newUser);
         await ctx.reply(`🎉 Welcome aboard, ${user.first_name}!\n\nAs a new member, you've received *${INITIAL_CREDITS} free credits*.`, { parse_mode: 'Markdown' });
@@ -179,36 +154,19 @@ bot.hears("My Account 📊", async (ctx) => {
 });
 
 bot.hears("Help ❓", (ctx) => ctx.reply(`❓ *Help & Support Center*\n\n` + `🔍 *How to Use:*\n• Send a phone number to get its report.\n• Each search costs 1 credit.\n\n` + `🎁 *Referral Program:*\n• Get ${REFERRAL_CREDIT} credit per successful referral.\n\n` + `👤 *Support:* ${SUPPORT_ADMIN}`, { parse_mode: 'Markdown' }));
-
 bot.hears("Refer & Earn 🎁", (ctx) => ctx.reply(`*Invite friends and earn credits!* 🎁\n\n` + `Your link: \`https://t.me/${ctx.botInfo.username}?start=${ctx.from.id}\``, { parse_mode: 'Markdown' }));
-
 bot.hears("Buy Credits 💰", (ctx) => ctx.reply(`💰 *Buy Credits - Price List*\n` + `━━━━━━━━━━━━━━━━━━━━━━━━\n` + `💎 *STARTER* - 25 Credits (₹49)\n` + `🔥 *BASIC* - 100 Credits (₹149)\n` + `⭐ *PRO* - 500 Credits (₹499)\n` + `━━━━━━━━━━━━━━━━━━━━━━━━\n` + `💬 Contact admin to buy: ${SUPPORT_ADMIN}`, { parse_mode: 'Markdown' }));
-
-bot.hears("Member Status 👥", async (ctx) => {
-    if (!ADMIN_IDS.includes(ctx.from.id)) return;
-    const totalMembers = await usersCollection.countDocuments({});
-    await ctx.reply(`📊 *Bot Member Status*\n\nTotal Members: *${totalMembers}*`, { parse_mode: 'Markdown' });
-});
+bot.hears("Member Status 👥", async (ctx) => { if (!ADMIN_IDS.includes(ctx.from.id)) return; const totalMembers = await usersCollection.countDocuments({}); await ctx.reply(`📊 *Bot Member Status*\n\nTotal Members: *${totalMembers}*`, { parse_mode: 'Markdown' }); });
 
 // --- ADMIN SCENE TRIGGERS ---
-bot.hears("Add Credit 👤", (ctx) => {
-    if (!ADMIN_IDS.includes(ctx.from.id)) return;
-    ctx.scene.enter('add_credit_wizard');
-});
-bot.hears("Broadcast 📢", (ctx) => {
-    if (!ADMIN_IDS.includes(ctx.from.id)) return;
-    ctx.scene.enter('broadcast_scene');
-});
+bot.hears("Add Credit 👤", (ctx) => { if (ADMIN_IDS.includes(ctx.from.id)) ctx.scene.enter('add_credit_wizard'); });
+bot.hears("Broadcast 📢", (ctx) => { if (ADMIN_IDS.includes(ctx.from.id)) ctx.scene.enter('broadcast_scene'); });
 
-// --- CORE NUMBER LOOKUP HANDLER ---
+// --- CORE NUMBER LOOKUP HANDLER (THE SMART FIX IS HERE) ---
 const handleNumberSearch = async (ctx) => {
     const userId = ctx.from.id, number = ctx.message.text.trim();
     if (!/^\d{10,}$/.test(number)) {
-        // This is not a number, so we ignore it, assuming it's part of a conversation.
-        // If no scene is active, you can optionally reply.
-        if (!ctx.scene.current) {
-            await ctx.reply("Please send a valid 10-digit number or use the menu buttons.");
-        }
+        if (!ctx.scene.current) await ctx.reply("Please send a valid 10-digit number or use the menu buttons.");
         return;
     }
 
@@ -224,9 +182,22 @@ const handleNumberSearch = async (ctx) => {
         await ctx.deleteMessage(processingMessage.message_id);
 
         if (response.data && Array.isArray(response.data) && response.data.length > 0) {
-            await ctx.reply(`✅ *Database Report Generated!*\nFound *${response.data.length}* record(s) for \`${number}\`. Details below:`, { parse_mode: 'Markdown' });
-            for (const [index, record] of response.data.entries()) {
-                await ctx.reply(formatRealRecordAsMessage(record, index, response.data.length), { parse_mode: 'Markdown' });
+            const data = response.data;
+            const header = `✅ *Database Report Generated!*\nFound *${data.length}* record(s) for \`${number}\`.\n\n`;
+            
+            const recordBlocks = data.map((record, index) => formatRealRecord(record, index, data.length));
+            const fullReport = recordBlocks.join('\n\n');
+
+            // SMART CHECK: Send as one message if short, otherwise send as a file
+            if ((header + fullReport).length < CHARACTER_LIMIT) {
+                await ctx.reply(header + fullReport, { parse_mode: 'Markdown' });
+            } else {
+                const fileContent = `Report for: ${number}\n\n${fullReport}`;
+                const fileBuffer = Buffer.from(fileContent, 'utf-8');
+                await ctx.replyWithDocument(
+                    { source: fileBuffer, filename: `Report_${number}.txt` },
+                    { caption: `📄 The report for \`${number}\` was too long to display and has been sent as a file.`, parse_mode: 'Markdown' }
+                );
             }
         } else {
             throw new Error("No data found");
@@ -241,21 +212,13 @@ const handleNumberSearch = async (ctx) => {
 };
 bot.on('text', handleNumberSearch);
 
-
-// --- EXPORT FOR VERCEL (THE FIX FOR DELAYED RESPONSE) ---
-// This creates a webhook handler that Telegraf fully controls.
+// --- EXPORT FOR VERCEL ---
 const handler = bot.webhookCallback('/api/bot');
-
 module.exports = async (req, res) => {
     try {
-        // We pass the request and response objects directly to Telegraf's handler.
-        // It will manage the response lifecycle correctly.
         await handler(req, res);
     } catch (err) {
         console.error("Error in webhook handler:", err);
-        // Ensure a response is sent even if there's a critical error.
-        if (!res.headersSent) {
-            res.status(500).send('Internal Server Error');
-        }
+        if (!res.headersSent) res.status(500).send('Internal Server Error');
     }
 };
