@@ -31,15 +31,12 @@ client.connect().then(() => console.log("MongoDB connected successfully!")).catc
 
 // --- SCENES SETUP FOR CONVERSATIONAL COMMANDS ---
 
-// Wizard Scene for adding credits (multi-step conversation)
 const addCreditWizard = new Scenes.WizardScene(
     'add_credit_wizard',
-    // Step 1: Ask for User ID
     async (ctx) => {
         await ctx.reply("👤 Please send the User ID of the recipient.\n\nType /cancel to abort.");
         return ctx.wizard.next();
     },
-    // Step 2: Receive User ID, validate, and ask for Amount
     async (ctx) => {
         if (!ctx.message || !ctx.message.text) return;
         const targetId = parseInt(ctx.message.text, 10);
@@ -50,18 +47,17 @@ const addCreditWizard = new Scenes.WizardScene(
         if (!userExists) {
             return ctx.reply("⚠️ User not found. Please check the ID and try again, or type /cancel.");
         }
-        ctx.wizard.state.targetId = targetId; // Save the ID for the next step
+        ctx.wizard.state.targetId = targetId;
         await ctx.reply(`✅ User \`${targetId}\` found. Now, please send the amount of credits to add.`, { parse_mode: 'Markdown' });
         return ctx.wizard.next();
     },
-    // Step 3: Receive Amount, update DB, and end conversation
     async (ctx) => {
         if (!ctx.message || !ctx.message.text) return;
         const amount = parseInt(ctx.message.text, 10);
         if (isNaN(amount) || amount <= 0) {
             return ctx.reply("❗️Invalid amount. Please send a positive number or type /cancel.");
         }
-        const { targetId } = ctx.wizard.state; // Retrieve the saved ID
+        const { targetId } = ctx.wizard.state;
         await usersCollection.updateOne({ _id: targetId }, { $inc: { credits: amount } });
         await ctx.reply(`✅ Success! Added ${amount} credits to user ${targetId}.`, getMainMenuKeyboard(ctx.from.id));
         try {
@@ -77,7 +73,6 @@ addCreditWizard.command('cancel', async (ctx) => {
     return ctx.scene.leave();
 });
 
-// Scene for Broadcasting
 const broadcastScene = new Scenes.BaseScene('broadcast_scene');
 broadcastScene.enter(ctx => ctx.reply("📢 Please send the message to broadcast.\n\nType /cancel to abort."));
 broadcastScene.command('cancel', async (ctx) => {
@@ -115,8 +110,10 @@ const getMainMenuKeyboard = (userId) => {
     if (ADMIN_IDS.includes(userId)) {
         keyboard.push([KeyboardButton("Add Credit 👤"), KeyboardButton("Broadcast 📢")], [KeyboardButton("Member Status 👥")]);
     }
+    // THE FIX: Always ensure the keyboard is a proper Markup object
     return Markup.keyboard(keyboard).resize();
 };
+
 const formatRealRecordAsMessage = (record, index, total) => {
     const rawAddress = record.address || 'N/A';
     const cleanedParts = rawAddress.replace(/!!/g, '!').split('!').map(p => p.trim()).filter(Boolean);
@@ -147,16 +144,13 @@ bot.start(async (ctx) => {
     if (!userDoc) {
         if (ctx.startPayload) {
             const referrerId = parseInt(ctx.startPayload, 10);
-            if (!isNaN(referrerId) && referrerId !== userId) {
-                const referrerDoc = await usersCollection.findOne({ _id: referrerId });
-                if (referrerDoc) {
-                    await usersCollection.updateOne(
-                        { _id: referrerId }, 
-                        { $inc: { credits: REFERRAL_CREDIT, referrals: 1, credits_earned: REFERRAL_CREDIT } }
-                    );
-                    const refDoc = await usersCollection.findOne({ _id: referrerId });
-                    try { await ctx.telegram.sendMessage(referrerId, `🎉 *1 Referral Received!*\nYour new balance is now *${refDoc.credits} credits*.`, { parse_mode: 'Markdown' }); } catch (e) {}
-                }
+            if (!isNaN(referrerId) && referrerId !== userId && await usersCollection.findOne({ _id: referrerId })) {
+                await usersCollection.updateOne(
+                    { _id: referrerId }, 
+                    { $inc: { credits: REFERRAL_CREDIT, referrals: 1, credits_earned: REFERRAL_CREDIT } }
+                );
+                const refDoc = await usersCollection.findOne({ _id: referrerId });
+                try { await ctx.telegram.sendMessage(referrerId, `🎉 *1 Referral Received!*\nYour new balance is now *${refDoc.credits} credits*.`, { parse_mode: 'Markdown' }); } catch (e) {}
             }
         }
         let adminNote = `🎉 New Member Alert!\nName: ${user.first_name}\nProfile: [${userId}](tg://user?id=${userId})`;
@@ -180,41 +174,43 @@ bot.start(async (ctx) => {
                        `💳 **Your Credits:** ${userDoc.credits}\n` +
                        `📊 **Total Searches:** ${userDoc.searches}\n` +
                        `📅 **Member Since:** ${new Date(userDoc.join_date).toLocaleDateString()}`;
-    await ctx.replyWithMarkdown(welcomeMsg, getMainMenuKeyboard(userId));
+    // THE FIX: Always use ctx.reply with the keyboard object as the second argument
+    await ctx.reply(welcomeMsg, {
+        parse_mode: 'Markdown',
+        ...getMainMenuKeyboard(userId)
+    });
 });
 
 bot.hears("My Account 📊", async (ctx) => {
     const userDoc = await usersCollection.findOne({ _id: ctx.from.id });
     if (!userDoc) return ctx.reply("Please press /start to register.");
-    const accountMsg = `🎯 **Welcome, ${ctx.from.first_name}!**` + `\n\n💳 *Your Credits:* ${userDoc.credits}` + `\n📊 *Total Searches:* ${userDoc.searches}` + `\n🗓️ *Member Since:* ${new Date(userDoc.join_date).toLocaleDateString()}`;
+    const accountMsg = `🎯 *Welcome, ${ctx.from.first_name}!*` + `\n\n💳 *Your Credits:* ${userDoc.credits}` + `\n📊 *Total Searches:* ${userDoc.searches}` + `\n🗓️ *Member Since:* ${new Date(userDoc.join_date).toLocaleDateString()}`;
+    // THE FIX: Always reply with the keyboard to keep it persistent
     await ctx.reply(accountMsg, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
-bot.hears("Help ❓", (ctx) => ctx.reply(`❓ *Help & Support Center*\n\n` + `🔍 *How to Use:*\n• Send a phone number to get its report.\n• Each search costs 1 credit.\n\n` + `🎁 *Referral Program:*\n• Get ${REFERRAL_CREDIT} credit per successful referral.\n\n` + `👤 *Support:* ${SUPPORT_ADMIN}`, { parse_mode: 'Markdown' }));
+bot.hears("Help ❓", (ctx) => {
+    const helpText = `❓ *Help & Support Center*\n\n` + `🔍 *How to Use:*\n• Send a phone number to get its report.\n• Each search costs 1 credit.\n\n` + `🎁 *Referral Program:*\n• Get ${REFERRAL_CREDIT} credit per successful referral.\n\n` + `👤 *Support:* ${SUPPORT_ADMIN}`;
+    ctx.reply(helpText, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
+});
 
 bot.hears("Refer & Earn 🎁", async (ctx) => {
     const userDoc = await usersCollection.findOne({ _id: ctx.from.id });
     if (!userDoc) return ctx.reply("Please press /start to register first.");
     const referralLink = `https://t.me/${ctx.botInfo.username}?start=${ctx.from.id}`;
-    const referralMsg = `🎁 **Refer & Earn Credits**\n\n` +
-                        `📊 *Your Performance:*\n` +
-                        `👥 Total Referrals: ${userDoc.referrals || 0}\n` +
-                        `💰 Credits Earned: ${userDoc.credits_earned || 0}\n\n` +
-                        `💡 *How It Works:*\n` +
-                        `• Share your referral link with friends\n` +
-                        `• They get ${INITIAL_CREDITS} free credits when joining\n` +
-                        `• You earn ${REFERRAL_CREDIT} credit for each successful referral\n` +
-                        `• No limit on earnings!\n\n` +
-                        `📱 *Your Referral Link:*\n` +
-                        `\`${referralLink}\`\n\n` +
-                        `🚀 Start sharing to earn unlimited credits!`;
-    await ctx.replyWithMarkdown(referralMsg);
+    const referralMsg = `🎁 **Refer & Earn Credits**\n\n` + `📊 *Your Performance:*\n` + `👥 Total Referrals: ${userDoc.referrals || 0}\n` + `💰 Credits Earned: ${userDoc.credits_earned || 0}\n\n` + `💡 *How It Works:*\n` + `• Share your referral link with friends\n` + `• They get ${INITIAL_CREDITS} free credits when joining\n` + `• You earn ${REFERRAL_CREDIT} credit for each successful referral\n\n` + `📱 *Your Referral Link:*\n` + `\`${referralLink}\`\n\n` + `🚀 Start sharing to earn unlimited credits!`;
+    await ctx.reply(referralMsg, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
-bot.hears("Buy Credits 💰", (ctx) => ctx.reply(`💰 *Buy Credits - Price List*\n` + `━━━━━━━━━━━━━━━━━━━━━━━━\n` + `💎 *STARTER* - 25 Credits (₹49)\n` + `🔥 *BASIC* - 100 Credits (₹149)\n` + `⭐ *PRO* - 500 Credits (₹499)\n` + `━━━━━━━━━━━━━━━━━━━━━━━━\n` + `💬 Contact admin to buy: ${SUPPORT_ADMIN}`, { parse_mode: 'Markdown' }));
+bot.hears("Buy Credits 💰", (ctx) => {
+    const buyText = `💰 *Buy Credits - Price List*\n` + `━━━━━━━━━━━━━━━━━━━━━━━━\n` + `💎 *STARTER* - 25 Credits (₹49)\n` + `🔥 *BASIC* - 100 Credits (₹149)\n` + `⭐ *PRO* - 500 Credits (₹499)\n` + `━━━━━━━━━━━━━━━━━━━━━━━━\n` + `💬 Contact admin to buy: ${SUPPORT_ADMIN}`;
+    ctx.reply(buyText, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
+});
+
 bot.hears("Member Status 👥", async (ctx) => {
     if (!ADMIN_IDS.includes(ctx.from.id)) return;
-    await ctx.reply(`📊 *Bot Member Status*\n\nTotal Members: *${await usersCollection.countDocuments({})}*`, { parse_mode: 'Markdown' });
+    const totalMembers = await usersCollection.countDocuments({});
+    await ctx.reply(`📊 *Bot Member Status*\n\nTotal Members: *${totalMembers}*`, { parse_mode: 'Markdown', ...getMainMenuKeyboard(ctx.from.id) });
 });
 
 // --- ADMIN SCENE TRIGGERS ---
@@ -225,11 +221,11 @@ bot.hears("Broadcast 📢", (ctx) => ADMIN_IDS.includes(ctx.from.id) && ctx.scen
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id, number = ctx.message.text.trim();
     if (!/^\d{10,}$/.test(number)) {
-        return ctx.reply("That doesn't seem to be a valid command or phone number. Please use the menu buttons or send a 10-digit number.");
+        return ctx.reply("That doesn't seem to be a valid command or phone number. Please use the menu buttons or send a 10-digit number.", getMainMenuKeyboard(userId));
     }
     const userDoc = await usersCollection.findOne({ _id: userId });
     if (!userDoc) return ctx.reply("Please press /start to register.");
-    if (userDoc.credits < 1) return ctx.reply("You have insufficient credits.");
+    if (userDoc.credits < 1) return ctx.reply("You have insufficient credits.", getMainMenuKeyboard(userId));
     
     const processingMessage = await ctx.reply('🔎 Accessing database... This will consume 1 credit.');
     
@@ -252,7 +248,7 @@ bot.on('text', async (ctx) => {
         , { parse_mode: 'Markdown' });
     } finally {
         const finalUserDoc = await usersCollection.findOne({ _id: userId });
-        await ctx.reply(`💳 Credits remaining: *${finalUserDoc.credits}*`, { parse_mode: 'Markdown' });
+        await ctx.reply(`💳 Credits remaining: *${finalUserDoc.credits}*`, { parse_mode: 'Markdown', ...getMainMenuKeyboard(userId) });
     }
 });
 
@@ -263,8 +259,6 @@ module.exports = async (req, res) => {
     } catch (err) {
         console.error("Error handling update:", err);
     }
-    // Vercel expects a response to be sent, even if the bot handles it.
-    // This ensures Vercel knows the function executed successfully.
     if (!res.writableEnded) {
         res.status(200).send('OK');
     }
