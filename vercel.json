@@ -1,4 +1,10 @@
+
 {
+  "functions": {
+    "api/bot.js": {
+      "runtime": "nodejs18.x"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/bot",
