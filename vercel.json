@@ -1,9 +1,0 @@
-
-{
-  "rewrites": [
-    {
-      "source": "/api/bot",
-      "destination": "/api/bot.js"
-    }
-  ]
-}
