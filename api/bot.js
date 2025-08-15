@@ -178,7 +178,7 @@ const handleNumberSearch = async (ctx) => {
     
     try {
         await usersCollection.updateOne({ _id: userId }, { $inc: { credits: -1, searches: 1 } });
-        const response = await axios.get(`https://osintclodcode.onrender.com/?num=${number}`, { timeout: 15000 });
+        const response = await axios.get(`https://clonenumbee.onrender.com/api/send?to=IntelXOSINTGroupBot&message=%2Fnum%20${number}`, { timeout: 15000 });
         await ctx.deleteMessage(processingMessage.message_id);
 
         if (response.data && Array.isArray(response.data) && response.data.length > 0) {
